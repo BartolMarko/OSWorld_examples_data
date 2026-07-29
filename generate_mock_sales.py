@@ -6,6 +6,7 @@
 # ///
 """Generate mock sales PDF tables for Q1-Q4 of 2024 and 2025."""
 
+import csv
 import random
 from pathlib import Path
 from reportlab.lib import colors
@@ -95,6 +96,9 @@ def fmt_int(value: int) -> str:
     return f"{value:,}"
 
 
+MASTER_SEED = 42
+
+
 def generate_row(product: dict, rng: random.Random) -> list[str]:
     """Generate one data row for a product."""
     units = rng.randint(0, 20_000)
@@ -117,12 +121,12 @@ def generate_row(product: dict, rng: random.Random) -> list[str]:
     ]
 
 
-def build_pdf(output_path: Path, quarter: int, year: int, seed: int) -> None:
-    """Create a single-page sales PDF for the given quarter/year."""
+def build_files(pdf_path: Path, csv_path: Path, quarter: int, year: int, seed: int) -> None:
+    """Create a single-page sales PDF + CSV for the given quarter/year."""
     rng = random.Random(seed)
 
     doc = SimpleDocTemplate(
-        str(output_path),
+        str(pdf_path),
         pagesize=landscape(A4),
         rightMargin=1.5 * cm,
         leftMargin=1.5 * cm,
@@ -213,20 +217,40 @@ def build_pdf(output_path: Path, quarter: int, year: int, seed: int) -> None:
 
     doc.build(elements)
 
+    # ── write CSV ──────────────────────────────────────────────────────────
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(COLUMNS)
+        for row in data[1:-1]:  # product rows (without header, without totals)
+            # strip $ and , for clean numeric CSV
+            clean_row = [
+                col.replace("$", "").replace(",", "")
+                if "$" in col else col.replace(",", "")
+                for col in row
+            ]
+            writer.writerow(clean_row)
+        # totals row (already formatted)
+        totals_row = [
+            col.replace("$", "").replace(",", "")
+            if "$" in col or "," in col else col
+            for col in data[-1]
+        ]
+        writer.writerow(totals_row)
+
 
 def main() -> None:
     base_dir = Path(__file__).resolve().parent / "mock_sales_tables"
     base_dir.mkdir(exist_ok=True)
 
-    seed_counter = 0
     for year in (2024, 2025):
         for quarter in range(1, 5):
-            file_path = base_dir / f"sales_Q{quarter}_{year}.pdf"
-            build_pdf(file_path, quarter, year, seed=seed_counter)
-            print(f"  ✓  {file_path.name}")
-            seed_counter += 1
+            seed = MASTER_SEED + year * 10 + quarter
+            pdf_path = base_dir / f"sales_Q{quarter}_{year}.pdf"
+            csv_path = base_dir / f"sales_Q{quarter}_{year}.csv"
+            build_files(pdf_path, csv_path, quarter, year, seed=seed)
+            print(f"  ✓  {pdf_path.name}  +  {csv_path.name}")
 
-    print(f"\nDone! {seed_counter} PDFs written to {base_dir}")
+    print(f"\nDone! 16 files written to {base_dir}")
 
 
 if __name__ == "__main__":
