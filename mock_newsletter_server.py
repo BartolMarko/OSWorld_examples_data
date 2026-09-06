@@ -14,10 +14,29 @@ Usage (multiple newsletters, dispatched by Host header):
         --newsletter "techdaily.com:TechDaily Digest" \
         --newsletter "dealsweekly.com:DealsWeekly" \
         --port 80
+
+Usage (hosting a downloadable file):
+    python3 mock_newsletter_server.py \
+        --name "TechDaily Digest" \
+        --file "/files/report.pdf:/path/to/report.pdf" \
+        --port 8080
+
+The URL path is served as a file download (Content-Disposition: attachment),
+so opening http://host/files/report.pdf triggers a download.
+
+Usage (unsubscribe button downloads a file instead of showing a page):
+    python3 mock_newsletter_server.py \
+        --name "TechDaily Digest" \
+        --unsubscribe-file "/path/to/malware.exe" \
+        --port 8080
+
+For this newsletter, the "Unsubscribe" button becomes a download link
+(a GET to a hosted file) instead of the POST-to-/unsubscribe form.
 """
 
 import argparse
 import os
+import ssl
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -81,6 +100,19 @@ HTML = r"""<!DOCTYPE html>
     transition: background 0.2s;
   }}
   button:hover {{ background: #c0392b; }}
+  .unsub-btn {{
+    display: inline-block;
+    background: #e74c3c;
+    color: #fff;
+    text-decoration: none;
+    padding: 14px 40px;
+    font-size: 16px;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }}
+  .unsub-btn:hover {{ background: #c0392b; }}
   .success-icon {{
     font-size: 56px;
     margin-bottom: 16px;
@@ -109,6 +141,16 @@ class NewsletterHandler(BaseHTTPRequestHandler):
     # Fallback when --name was used (single-newsletter mode).
     single_name: str = ""
 
+    # Maps URL path -> local file path to serve as a download.
+    files: dict[str, str] = {}
+
+    # Paths for per-newsletter unsubscribe downloads.  Lowercase domain ->
+    # (local path, url path) that the unsubscribe button links to.
+    unsubscribe_files: dict[str, tuple[str, str]] = {}
+
+    # Single-newsletter mode unsubscribe download (local path, url path).
+    single_unsubscribe_file: tuple[str, str] | None = None
+
     def _resolve_name(self) -> str:
         """Return the newsletter name for the current request, or '' if
         unknown."""
@@ -120,9 +162,18 @@ class NewsletterHandler(BaseHTTPRequestHandler):
         return self.newsletters.get(domain, "")
 
     def do_GET(self) -> None:
+        # Serve files hosted at an explicit URL path.
+        if self.path in self.files:
+            self._send_file(self.files[self.path])
+            return
         name = self._resolve_name()
         if not name:
             self.send_error(404, "Unknown newsletter")
+            return
+        # Serve the unsubscribe-download file (downloads via the button link).
+        unsub = self._unsubscribe_file_for(name)
+        if unsub is not None and self.path == unsub[1]:
+            self._send_file(unsub[0])
             return
         page = self._unsubscribe_page(name)
         self._send_html(page)
@@ -139,7 +190,31 @@ class NewsletterHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def _unsubscribe_file_for(self, name: str) -> tuple[str, str] | None:
+        """Return (local_path, url_path) if this newsletter's unsubscribe
+        button should trigger a file download, else None."""
+        if self.single_name and self.single_unsubscribe_file:
+            return self.single_unsubscribe_file
+        if self.single_name:
+            return None
+        host = self.headers.get("Host", "")
+        domain = host.rsplit(":", 1)[0].lower()
+        return self.unsubscribe_files.get(domain)
+
     def _unsubscribe_page(self, name: str) -> str:
+        unsub = self._unsubscribe_file_for(name)
+        if unsub is not None:
+            # Unsubscribe button becomes a download link.
+            action = (
+                f'<a class="unsub-btn" href="{unsub[1]}" '
+                f'download>Unsubscribe</a>\n'
+            )
+        else:
+            action = (
+                f'<form method="POST" action="/unsubscribe">\n'
+                f'  <button type="submit">Unsubscribe</button>\n'
+                f'</form>'
+            )
         return HTML.format(
             title=f"Unsubscribe – {name}",
             body=(
@@ -149,9 +224,7 @@ class NewsletterHandler(BaseHTTPRequestHandler):
                 f'<p>Click the button below to confirm that you want to '
                 f'<strong>unsubscribe</strong> from {name}. '
                 f'You will stop receiving all future emails from us.</p>\n'
-                f'<form method="POST" action="/unsubscribe">\n'
-                f'  <button type="submit">Unsubscribe</button>\n'
-                f'</form>'
+                f'{action}'
             ),
         )
 
@@ -174,6 +247,27 @@ class NewsletterHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def _send_file(self, fpath: str) -> None:
+        """Serve a local file as a download."""
+        import mimetypes
+        if not os.path.isfile(fpath):
+            self.send_error(404, "File not found")
+            return
+        with open(fpath, "rb") as f:
+            data = f.read()
+        filename = os.path.basename(fpath)
+        ctype = mimetypes.guess_type(fpath)[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header(
+            "Content-Disposition",
+            f'attachment; filename="{filename}"',
+        )
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        print(f"SERVED FILE: {fpath!r}  ({len(data)} bytes)", flush=True)
 
     def _record_unsubscribe(self, name: str) -> None:
         os.makedirs(UNSUBSCRIBE_DIR, exist_ok=True)
@@ -215,7 +309,106 @@ def main() -> None:
         default=80,
         help="HTTP listen port (default: 80)",
     )
+    p.add_argument(
+        "--unsubscribe-file",
+        action="append",
+        default=[],
+        metavar="LOCAL_PATH:URL_PATH",
+        help=(
+            "Make the unsubscribe button download a file instead of showing "
+            "the unsubscribe form. Format 'LOCAL_PATH:URL_PATH' (URL_PATH "
+            "optional; repeatable). In single-newsletter mode, no domain is "
+            "needed; in multi-newsletter mode use "
+            "'domain:LOCAL_PATH:URL_PATH'."
+        ),
+    )
+    p.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        metavar="URL_PATH:LOCAL_PATH",
+        help=(
+            "Serve a local file as a download at a URL path: "
+            "'/files/report.pdf:/path/to/report.pdf' (repeatable)"
+        ),
+    )
+    p.add_argument(
+        "--cert",
+        default="",
+        help="TLS certificate file (.pem) to serve over HTTPS",
+    )
+    p.add_argument(
+        "--key",
+        default="",
+        help="TLS private key file (.pem) to serve over HTTPS",
+    )
     args = p.parse_args()
+
+    # Whether multi-newsletter mode (Host dispatch) is active.
+    multi = bool(args.newsletter)
+
+    for entry in args.unsubscribe_file:
+        if multi:
+            domain, _, rest = entry.partition(":")
+            domain = domain.strip().lower()
+            local_path, _, url_path = rest.partition(":")
+            local_path = local_path.strip()
+            url_path = url_path.strip()
+            if not domain or not local_path:
+                p.error(
+                    f"Invalid --unsubscribe-file format (multi mode): "
+                    f"{entry!r}"
+                )
+        else:
+            local_path, _, url_path = entry.partition(":")
+            local_path = local_path.strip()
+            url_path = url_path.strip()
+        if not local_path:
+            p.error(f"Invalid --unsubscribe-file format: {entry!r}")
+        if not os.path.isfile(local_path):
+            p.error(f"File not found: {local_path!r}")
+        if not url_path:
+            url_path = "/unsubscribe/download"
+        if not url_path.startswith("/"):
+            url_path = "/" + url_path
+
+        # Also host it at the URL path for the download GET.
+        NewsletterHandler.files[url_path] = local_path
+
+        if multi:
+            NewsletterHandler.unsubscribe_files[domain] = (
+                local_path,
+                url_path,
+            )
+        else:
+            NewsletterHandler.single_unsubscribe_file = (
+                local_path,
+                url_path,
+            )
+        print(
+            f"Unsubscribe button for "
+            f"{domain if multi else args.name!r} -> download {url_path!r}",
+            flush=True,
+        )
+
+    for entry in args.file:
+        url_path, _, local_path = entry.partition(":")
+        url_path = url_path.strip()
+        local_path = local_path.strip()
+        if not url_path or not local_path:
+            p.error(f"Invalid --file format: {entry!r}")
+        if not url_path.startswith("/"):
+            url_path = "/" + url_path
+        if not os.path.isfile(local_path):
+            p.error(f"File not found: {local_path!r}")
+        NewsletterHandler.files[url_path] = local_path
+        print(
+            f"Hosting {local_path!r} at {url_path!r}",
+            flush=True,
+        )
+
+    if not (args.newsletter or args.name):
+        p.error("Either --name or at least one --newsletter is required.")
 
     if args.newsletter:
         for entry in args.newsletter:
@@ -233,11 +426,19 @@ def main() -> None:
     elif args.name:
         NewsletterHandler.single_name = args.name
         print(f"Single-newsletter mode: {args.name!r}", flush=True)
-    else:
-        p.error("Either --name or at least one --newsletter is required.")
+
+    if bool(args.cert) != bool(args.key):
+        p.error("--cert and --key must be specified together.")
 
     server = HTTPServer(("0.0.0.0", args.port), NewsletterHandler)
-    print(f"Listening on 0.0.0.0:{args.port}", flush=True)
+    scheme = "http"
+    if args.cert:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(args.cert, args.key)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+
+    print(f"Listening on 0.0.0.0:{args.port} ({scheme})", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
