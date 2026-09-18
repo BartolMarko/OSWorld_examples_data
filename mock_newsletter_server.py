@@ -361,6 +361,14 @@ HTML = r"""<!DOCTYPE html>
     line-height: 1.6;
     margin-bottom: 28px;
   }}
+  .sender-note {{
+    color: #7f8c8d;
+    font-size: 13px;
+    margin-top: 28px;
+    margin-bottom: 0;
+    padding-top: 18px;
+    border-top: 1px solid #ecf0f1;
+  }}
   button {{
     background: #e74c3c;
     color: #fff;
@@ -529,7 +537,32 @@ class NewsletterHandler(BaseHTTPRequestHandler):
                 f'<strong>unsubscribe</strong> from {name}. '
                 f'You will stop receiving all future emails from us.</p>\n'
                 f'{action}'
+                f'{self._sender_footer(name)}'
             ),
+        )
+
+    def _sender_footer(self, name: str) -> str:
+        """Name the sending address when this host is also the newsletter's own website.
+
+        Where the website and the unsubscribe host are different machines (Morning Brew
+        sends from morningbrew.com and links to links.morningbrew.com), the website owns
+        "/" and a verifier reads the address straight off it. Where they are the SAME host
+        -- tldr.tech is TLDR's sending domain and the target of its unsubscribe link -- the
+        unsubscribe flow owns "/", the website moves to its named paths, and the root would
+        otherwise carry no address at all: the one benign newsletter in the mailbox whose
+        sender cannot be confirmed by visiting its own site. Stating it here keeps a single
+        fetch of the publisher root sufficient for every newsletter alike. Real unsubscribe
+        pages identify the sender the same way.
+        """
+        site = self.sites.get(self._host_domain())
+        if not site:
+            return ""
+        address = site.get("address", "")
+        if not address:
+            return ""
+        return (
+            f'\n<p class="sender-note">{name} newsletters are sent from '
+            f'<strong>{address}</strong>. We never send from any other address.</p>'
         )
 
     def _unsubscribed_page(self, name: str) -> str:
