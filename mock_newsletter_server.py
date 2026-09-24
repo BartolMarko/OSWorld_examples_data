@@ -3,7 +3,7 @@
 Mock newsletter unsubscribe page server.
 
 Serves unsubscribe pages for one or more fake newsletters.  Dispatches by the
-HTTP ``Host`` header so a single server on port 80 can handle multiple domains
+HTTP Host header so a single server on port 80 can handle multiple domains
 (e.g. techdaily.com, dealsweekly.com) without port numbers appearing in URLs.
 
 Usage (single newsletter, backward-compatible):
@@ -204,7 +204,6 @@ class NewsletterHandler(BaseHTTPRequestHandler):
     def _unsubscribe_page(self, name: str) -> str:
         unsub = self._unsubscribe_file_for(name)
         if unsub is not None:
-            # Unsubscribe button becomes a download link.
             action = (
                 f'<a class="unsub-btn" href="{unsub[1]}" '
                 f'download>Unsubscribe</a>\n'
@@ -281,10 +280,6 @@ class NewsletterHandler(BaseHTTPRequestHandler):
         print(f"[{self.client_address[0]}] {fmt % args}", flush=True)
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 def main() -> None:
     p = argparse.ArgumentParser(
         description="Mock newsletter unsubscribe page server"
@@ -344,7 +339,6 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    # Whether multi-newsletter mode (Host dispatch) is active.
     multi = bool(args.newsletter)
 
     for entry in args.unsubscribe_file:
@@ -372,7 +366,6 @@ def main() -> None:
         if not url_path.startswith("/"):
             url_path = "/" + url_path
 
-        # Also host it at the URL path for the download GET.
         NewsletterHandler.files[url_path] = local_path
 
         if multi:

