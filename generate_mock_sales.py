@@ -21,6 +21,7 @@ from reportlab.platypus import (
     Spacer,
 )
 
+# ── product definitions ──────────────────────────────────────────────────────
 PRODUCTS = [
     {
         "name": "Logitech MX Master 3S Mouse",
@@ -139,11 +140,12 @@ def build_files(pdf_path: Path, csv_path: Path, quarter: int, year: int, seed: i
         parent=style["Heading1"],
         fontSize=18,
         spaceAfter=0.5 * cm,
-        alignment=1,
+        alignment=1,  # centre
     )
 
     elements = []
 
+    # title
     elements.append(Paragraph(f"Sales Q{quarter} {year}", title_style))
     elements.append(Spacer(1, 0.3 * cm))
 
@@ -153,8 +155,9 @@ def build_files(pdf_path: Path, csv_path: Path, quarter: int, year: int, seed: i
         data.append(generate_row(product, rng))
 
     # totals row
-    totals = [0.0] * 3
+    totals = [0.0] * 3  # revenue, cost, profit
     for row in data[1:]:
+        # parse dollar strings back to floats
         totals[0] += float(row[4].replace("$", "").replace(",", ""))
         totals[1] += float(row[5].replace("$", "").replace(",", ""))
         totals[2] += float(row[6].replace("$", "").replace(",", ""))
@@ -172,6 +175,7 @@ def build_files(pdf_path: Path, csv_path: Path, quarter: int, year: int, seed: i
         fmt_dollar(totals[2]),
     ])
 
+    # build table
     col_widths = [7.2 * cm, 2.0 * cm, 2.6 * cm, 2.6 * cm, 3.4 * cm, 3.4 * cm, 3.4 * cm]
     table = Table(data, colWidths=col_widths, repeatRows=1)
 
@@ -189,8 +193,8 @@ def build_files(pdf_path: Path, csv_path: Path, quarter: int, year: int, seed: i
         ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
         ("FONTSIZE", (0, -1), (-1, -1), 9),
         # alignment
-        ("ALIGN", (0, 0), (0, -1), "LEFT"),
-        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),    # product name left
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),  # numbers right
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         # grid
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#bdc3c7")),
@@ -213,16 +217,19 @@ def build_files(pdf_path: Path, csv_path: Path, quarter: int, year: int, seed: i
 
     doc.build(elements)
 
+    # ── write CSV ──────────────────────────────────────────────────────────
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(COLUMNS)
-        for row in data[1:-1]:  # product rows
+        for row in data[1:-1]:  # product rows (without header, without totals)
+            # strip $ and , for clean numeric CSV
             clean_row = [
                 col.replace("$", "").replace(",", "")
                 if "$" in col else col.replace(",", "")
                 for col in row
             ]
             writer.writerow(clean_row)
+        # totals row (already formatted)
         totals_row = [
             col.replace("$", "").replace(",", "")
             if "$" in col or "," in col else col
@@ -241,7 +248,7 @@ def main() -> None:
             pdf_path = base_dir / f"sales_Q{quarter}_{year}.pdf"
             csv_path = base_dir / f"sales_Q{quarter}_{year}.csv"
             build_files(pdf_path, csv_path, quarter, year, seed=seed)
-            print(f"{pdf_path.name}  +  {csv_path.name}")
+            print(f"  ✓  {pdf_path.name}  +  {csv_path.name}")
 
     print(f"\nDone! 16 files written to {base_dir}")
 
